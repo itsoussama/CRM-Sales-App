@@ -39,6 +39,14 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {
+        "origin": "https://rork.com/"
+      },
+      "eas": {
+        "projectId": "83b0ff39-4a0f-41e7-9fb5-bfd8171583ec"
+      }
     }
   }
 }

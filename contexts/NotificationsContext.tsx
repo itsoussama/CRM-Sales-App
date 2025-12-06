@@ -1,83 +1,123 @@
 import createContextHook from '@nkzw/create-context-hook';
 import { useState, useEffect } from 'react';
-import { useQuery, useMutation } from '@tanstack/react-query';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { 
+  collection, 
+  onSnapshot, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  doc, 
+  query, 
+  orderBy,
+  writeBatch,
+  getDocs
+} from 'firebase/firestore';
+import { db } from '@/config/firebase';
 import { Notification } from '@/types/crm';
 
-const NOTIFICATIONS_STORAGE_KEY = 'crm_notifications';
+import { useAuth } from './AuthContext';
 
 export const [NotificationsContext, useNotifications] = createContextHook(() => {
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const { isAuthenticated } = useAuth();
 
-  const notificationsQuery = useQuery({
-    queryKey: ['notifications'],
-    queryFn: async () => {
-      console.log('[NotificationsContext] Loading notifications from storage');
-      const stored = await AsyncStorage.getItem(NOTIFICATIONS_STORAGE_KEY);
-      if (stored) {
-        const parsedNotifications = JSON.parse(stored);
-        console.log('[NotificationsContext] Loaded notifications:', parsedNotifications.length);
-        return parsedNotifications;
-      }
-      console.log('[NotificationsContext] No stored notifications');
-      return [];
-    },
-  });
-
-  const saveMutation = useMutation({
-    mutationFn: async (updatedNotifications: Notification[]) => {
-      console.log('[NotificationsContext] Saving notifications to storage:', updatedNotifications.length);
-      await AsyncStorage.setItem(NOTIFICATIONS_STORAGE_KEY, JSON.stringify(updatedNotifications));
-      return updatedNotifications;
-    },
-  });
-
+  // Real-time listener for notifications
   useEffect(() => {
-    if (notificationsQuery.data) {
-      setNotifications(notificationsQuery.data);
+    if (!isAuthenticated) {
+      setNotifications([]);
+      setIsLoading(false);
+      return;
     }
-  }, [notificationsQuery.data]);
 
-  const addNotification = (notification: Omit<Notification, 'id' | 'createdAt' | 'isRead'>) => {
-    const newNotification: Notification = {
-      ...notification,
-      id: Date.now().toString(),
-      isRead: false,
-      createdAt: new Date().toISOString(),
-    };
-    console.log('[NotificationsContext] Adding notification:', newNotification.type);
-    const updated = [newNotification, ...notifications];
-    setNotifications(updated);
-    saveMutation.mutate(updated);
+    console.log('[NotificationsContext] Setting up notifications listener');
+    const q = query(collection(db, 'notifications'), orderBy('createdAt', 'desc'));
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const notificationsList: Notification[] = [];
+      snapshot.forEach((doc) => {
+        notificationsList.push({ id: doc.id, ...doc.data() } as Notification);
+      });
+      console.log('[NotificationsContext] Notifications updated:', notificationsList.length);
+      setNotifications(notificationsList);
+      setIsLoading(false);
+    }, (error) => {
+      console.error('[NotificationsContext] Error listening to notifications:', error);
+      setIsLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [isAuthenticated]);
+
+  const addNotification = async (notification: Omit<Notification, 'id' | 'createdAt' | 'isRead'>) => {
+    try {
+      console.log('[NotificationsContext] Adding notification:', notification.type);
+      const newNotificationData = {
+        ...notification,
+        isRead: false,
+        createdAt: new Date().toISOString(),
+      };
+      await addDoc(collection(db, 'notifications'), newNotificationData);
+    } catch (error) {
+      console.error('[NotificationsContext] Error adding notification:', error);
+    }
   };
 
-  const markAsRead = (id: string) => {
+  const markAsRead = async (id: string) => {
     console.log('[NotificationsContext] Marking notification as read:', id);
-    const updated = notifications.map(notif =>
-      notif.id === id ? { ...notif, isRead: true } : notif
-    );
-    setNotifications(updated);
-    saveMutation.mutate(updated);
+    try {
+      const notificationRef = doc(db, 'notifications', id);
+      await updateDoc(notificationRef, { isRead: true });
+    } catch (error) {
+      console.error('[NotificationsContext] Error marking notification as read:', error);
+    }
   };
 
-  const markAllAsRead = () => {
+  const markAllAsRead = async () => {
     console.log('[NotificationsContext] Marking all notifications as read');
-    const updated = notifications.map(notif => ({ ...notif, isRead: true }));
-    setNotifications(updated);
-    saveMutation.mutate(updated);
+    try {
+      const batch = writeBatch(db);
+      const unreadNotifications = notifications.filter(n => !n.isRead);
+      
+      unreadNotifications.forEach(notification => {
+        const ref = doc(db, 'notifications', notification.id);
+        batch.update(ref, { isRead: true });
+      });
+      
+      if (unreadNotifications.length > 0) {
+        await batch.commit();
+      }
+    } catch (error) {
+      console.error('[NotificationsContext] Error marking all as read:', error);
+    }
   };
 
-  const deleteNotification = (id: string) => {
+  const deleteNotification = async (id: string) => {
     console.log('[NotificationsContext] Deleting notification:', id);
-    const updated = notifications.filter(notif => notif.id !== id);
-    setNotifications(updated);
-    saveMutation.mutate(updated);
+    try {
+      await deleteDoc(doc(db, 'notifications', id));
+    } catch (error) {
+      console.error('[NotificationsContext] Error deleting notification:', error);
+    }
   };
 
-  const clearAll = () => {
+  const clearAll = async () => {
     console.log('[NotificationsContext] Clearing all notifications');
-    setNotifications([]);
-    saveMutation.mutate([]);
+    try {
+      // Batch delete might fail if too many docs (>500), but for this app it's fine
+      // Or we can just delete one by one or use a cloud function (overkill here)
+      const batch = writeBatch(db);
+      notifications.forEach(notification => {
+        const ref = doc(db, 'notifications', notification.id);
+        batch.delete(ref);
+      });
+      
+      if (notifications.length > 0) {
+        await batch.commit();
+      }
+    } catch (error) {
+      console.error('[NotificationsContext] Error clearing notifications:', error);
+    }
   };
 
   const unreadCount = notifications.filter(n => !n.isRead).length;
@@ -85,7 +125,7 @@ export const [NotificationsContext, useNotifications] = createContextHook(() => 
   return {
     notifications,
     unreadCount,
-    isLoading: notificationsQuery.isLoading,
+    isLoading,
     addNotification,
     markAsRead,
     markAllAsRead,

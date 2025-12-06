@@ -39,3 +39,11 @@ yarn-error.*
 .vercel
 
 .rork
+
+# firebase
+firestore.indexes.json
+firestore.rules
+
+# Portable JDK
+.portable_jdk/
+jdk.zip

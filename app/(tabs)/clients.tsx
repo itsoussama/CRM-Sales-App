@@ -1,85 +1,126 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Modal, KeyboardAvoidingView, Platform, Animated } from 'react-native';
-import { Stack } from 'expo-router';
-import { Plus, Search, X as XIcon, Clock, CheckCircle, ChevronDown, UserPlus } from 'lucide-react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Modal, KeyboardAvoidingView, Platform, Animated, Alert } from 'react-native';
+import { Stack, useRouter } from 'expo-router';
+import { Plus, Search, X as XIcon, Clock, CheckCircle, ChevronDown, UserPlus, Download } from 'lucide-react-native';
+import { generateClientsCSV, shareFile } from '@/utils/export';
 import { useFilteredClients, useClients } from '@/contexts/ClientsContext';
 import { useServices } from '@/contexts/ServicesContext';
+import { useSettings } from '@/contexts/SettingsContext';
 import { PaymentStatus, SubscriptionPeriod, Client } from '@/types/crm';
 import { getSubscriptionLabel, SUBSCRIPTION_PERIODS } from '@/constants/subscription-periods';
+import { useTranslation } from 'react-i18next';
 
 type FilterTab = 'all' | PaymentStatus;
 
 export default function ClientsScreen() {
-  const [activeFilter, setActiveFilter] = useState<FilterTab>('all');
+  const { t } = useTranslation();
+  const { settings } = useSettings();
+  const router = useRouter();
+  const { clients, addClient, markAsPaid, cancelClient, renewSubscription } = useClients();
+  const { services } = useServices();
+
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
+  const [activeFilter, setActiveFilter] = useState<FilterTab>('all');
   const [showQuickActions, setShowQuickActions] = useState(false);
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [paymentAmount, setPaymentAmount] = useState('');
   const [showAddClient, setShowAddClient] = useState(false);
-  const [showServicePicker, setShowServicePicker] = useState(false);
-  const [showPeriodPicker, setShowPeriodPicker] = useState(false);
-  const [showRegionPicker, setShowRegionPicker] = useState(false);
-  
-  const [fabScale] = useState(new Animated.Value(1));
-  
-  const [newClient, setNewClient] = useState({
+  const [newClient, setNewClient] = useState<{
+    name: string;
+    email: string;
+    phone: string;
+    phoneRegion: string;
+    serviceId: string;
+    subscriptionPeriod: SubscriptionPeriod;
+    customPeriodMonths: string;
+    price: string;
+    notes: string;
+  }>({
     name: '',
     email: '',
     phone: '',
-    phoneRegion: '+1',
+    phoneRegion: '+212',
     serviceId: '',
-    price: '',
-    subscriptionPeriod: '1month' as SubscriptionPeriod,
+    subscriptionPeriod: '1month',
     customPeriodMonths: '',
+    price: '',
     notes: '',
   });
-  
-  const filteredClients = useFilteredClients(activeFilter);
-  const { services } = useServices();
-  const { markAsPaid, cancelClient, renewSubscription, addClient } = useClients();
-  
+  const [showServicePicker, setShowServicePicker] = useState(false);
+  const [showPeriodPicker, setShowPeriodPicker] = useState(false);
+  const [showRegionPicker, setShowRegionPicker] = useState(false);
+  const [fabScale] = useState(new Animated.Value(1));
+  const [isExporting, setIsExporting] = useState(false);
+
   const regions = [
-    { code: '+1', label: 'US/Canada' },
-    { code: '+44', label: 'UK' },
-    { code: '+91', label: 'India' },
-    { code: '+86', label: 'China' },
+    { code: '+212', label: 'Morocco' },
+    { code: '+1', label: 'USA/Canada' },
     { code: '+33', label: 'France' },
-    { code: '+49', label: 'Germany' },
-    { code: '+81', label: 'Japan' },
-    { code: '+61', label: 'Australia' },
+    { code: '+34', label: 'Spain' },
+    { code: '+44', label: 'UK' },
     { code: '+971', label: 'UAE' },
-    { code: '+20', label: 'Egypt' },
+    { code: '+966', label: 'Saudi Arabia' },
   ];
 
-  const searchResults = filteredClients.filter(client =>
-    client.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    client.email.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const searchResults = clients.filter(client => {
+    const matchesSearch = 
+      client.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      client.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      client.phone.includes(searchQuery);
+    
+    const matchesFilter = activeFilter === 'all' || client.paymentStatus === activeFilter;
+    
+    return matchesSearch && matchesFilter;
+  });
 
-  const selectedClient = searchResults.find(c => c.id === selectedClientId);
+  const selectedClient = clients.find(c => c.id === selectedClientId);
 
-  const handleMarkPaid = () => {
+  const handleMarkPaid = async () => {
     if (selectedClientId && paymentAmount) {
-      markAsPaid(selectedClientId, parseFloat(paymentAmount));
-      setShowQuickActions(false);
-      setPaymentAmount('');
-      setSelectedClientId(null);
+      try {
+        await markAsPaid(selectedClientId, parseFloat(paymentAmount));
+        setShowQuickActions(false);
+        setPaymentAmount('');
+        Alert.alert(t('common.success'), t('clients.paymentSuccess'));
+      } catch (error) {
+        Alert.alert(t('common.error'), t('clients.paymentError'));
+      }
     }
   };
 
   const handleCancel = () => {
     if (selectedClientId) {
-      cancelClient(selectedClientId);
-      setShowQuickActions(false);
-      setSelectedClientId(null);
+      Alert.alert(
+        t('clients.cancelTitle'),
+        t('clients.cancelConfirm'),
+        [
+          { text: t('common.no'), style: 'cancel' },
+          { 
+            text: t('common.yes'), 
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                await cancelClient(selectedClientId);
+                setShowQuickActions(false);
+              } catch (error) {
+                Alert.alert(t('common.error'), t('clients.cancelError'));
+              }
+            }
+          }
+        ]
+      );
     }
   };
 
-  const handleRenew = (months: number) => {
+  const handleRenew = async (months: number) => {
     if (selectedClientId) {
-      renewSubscription(selectedClientId, months);
-      setShowQuickActions(false);
-      setSelectedClientId(null);
+      try {
+        await renewSubscription(selectedClientId, months);
+        setShowQuickActions(false);
+        Alert.alert(t('common.success'), t('clients.renewSuccess', { months }));
+      } catch (error) {
+        Alert.alert(t('common.error'), t('clients.renewError'));
+      }
     }
   };
 
@@ -88,92 +129,117 @@ export default function ClientsScreen() {
       name: '',
       email: '',
       phone: '',
-      phoneRegion: '+1',
+      phoneRegion: '+212',
       serviceId: '',
-      price: '',
       subscriptionPeriod: '1month',
       customPeriodMonths: '',
+      price: '',
       notes: '',
     });
   };
 
-  const handleAddClient = () => {
-    console.log('[AddClient] Form data:', newClient);
-    
-    if (!newClient.name.trim() || !newClient.email.trim() || !newClient.phone.trim() || !newClient.serviceId) {
-      console.log('[AddClient] Validation failed: missing required fields');
+  const handleAddClient = async () => {
+    if (!newClient.name || !newClient.email || !newClient.phone || !newClient.serviceId) {
+      Alert.alert(t('common.error'), t('common.fillRequired'));
       return;
     }
 
-    const clientData: Omit<Client, 'id' | 'createdAt' | 'updatedAt'> = {
-      name: newClient.name.trim(),
-      email: newClient.email.trim(),
-      phone: newClient.phone.trim(),
-      phoneRegion: newClient.phoneRegion,
-      serviceId: newClient.serviceId,
-      price: parseFloat(newClient.price) || 0,
-      subscriptionPeriod: newClient.subscriptionPeriod,
-      customPeriodMonths: newClient.subscriptionPeriod === 'custom' ? parseInt(newClient.customPeriodMonths) : undefined,
-      isJoined: true,
-      dateJoined: new Date().toISOString(),
-      paymentStatus: 'unpaid',
-      notes: newClient.notes.trim(),
-    };
+    if (newClient.subscriptionPeriod === 'custom' && !newClient.customPeriodMonths) {
+      Alert.alert(t('common.error'), t('clients.customPeriodRequired'));
+      return;
+    }
 
-    console.log('[AddClient] Creating client:', clientData);
-    addClient(clientData);
-    setShowAddClient(false);
-    resetForm();
+    try {
+      await addClient({
+        name: newClient.name!,
+        email: newClient.email!,
+        phone: newClient.phone,
+        phoneRegion: newClient.phoneRegion,
+        serviceId: newClient.serviceId!,
+        subscriptionPeriod: newClient.subscriptionPeriod as SubscriptionPeriod,
+        customPeriodMonths: newClient.customPeriodMonths ? parseInt(newClient.customPeriodMonths) : null,
+        price: parseFloat(newClient.price || '0'),
+        notes: newClient.notes,
+        paymentStatus: 'paid', // Default to paid for new clients
+        isJoined: true,
+        dateJoined: new Date().toISOString(),
+      });
+      setShowAddClient(false);
+      resetForm();
+      Alert.alert(t('common.success'), t('clients.addSuccess'));
+    } catch (error) {
+      Alert.alert(t('common.error'), t('clients.addError'));
+    }
   };
 
-  const getStatusColor = (status: string) => {
+  const getStatusColor = (status: PaymentStatus) => {
     switch (status) {
-      case 'paid':
-        return '#10B981';
-      case 'unpaid':
-        return '#F59E0B';
-      case 'canceled':
-        return '#EF4444';
-      default:
-        return '#6B7280';
+      case 'paid': return '#10B981';
+      case 'unpaid': return '#F59E0B';
+      case 'canceled': return '#EF4444';
+      default: return '#6B7280';
     }
   };
 
   const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    return new Date(dateString).toLocaleDateString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+  };
+
+  const formatCurrency = (amount: number) => {
+    return new Intl.NumberFormat(settings.language, {
+      style: 'currency',
+      currency: settings.currency,
+    }).format(amount);
   };
 
   const handleFabPress = () => {
     Animated.sequence([
-      Animated.timing(fabScale, {
-        toValue: 0.9,
-        duration: 100,
-        useNativeDriver: true,
-      }),
-      Animated.timing(fabScale, {
-        toValue: 1,
-        duration: 100,
-        useNativeDriver: true,
-      }),
-    ]).start();
-    setShowAddClient(true);
+      Animated.timing(fabScale, { toValue: 0.9, duration: 100, useNativeDriver: true }),
+      Animated.timing(fabScale, { toValue: 1, duration: 100, useNativeDriver: true }),
+    ]).start(() => setShowAddClient(true));
+  };
+
+  const handleExport = async () => {
+    try {
+      setIsExporting(true);
+      const fileUri = await generateClientsCSV(clients);
+      await shareFile(fileUri);
+      Alert.alert(t('common.success'), t('clients.exportSuccess'));
+    } catch (error) {
+      console.error('Export error:', error);
+      Alert.alert(t('common.error'), t('clients.exportError'));
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   return (
     <View style={styles.container}>
-      <Stack.Screen options={{
-        title: 'Clients',
+      <Stack.Screen options={{ 
+        title: t('clients.title'),
         headerStyle: { backgroundColor: '#1F2937' },
         headerTintColor: '#FFFFFF',
         headerShadowVisible: false,
+        headerRight: () => (
+          <TouchableOpacity 
+            onPress={handleExport} 
+            disabled={isExporting}
+            style={{ marginRight: 16 }}
+          >
+            <Download size={24} color={isExporting ? '#6B7280' : '#3B82F6'} />
+          </TouchableOpacity>
+        ),
       }} />
 
       <View style={styles.searchContainer}>
         <Search size={20} color="#9CA3AF" style={styles.searchIcon} />
         <TextInput
           style={styles.searchInput}
-          placeholder="Search clients..."
+          placeholder={t('common.search')}
           placeholderTextColor="#6B7280"
           value={searchQuery}
           onChangeText={setSearchQuery}
@@ -194,7 +260,7 @@ export default function ClientsScreen() {
               styles.filterText,
               activeFilter === filter && styles.filterTextActive,
             ]}>
-              {filter === 'all' ? 'All' : filter.charAt(0).toUpperCase() + filter.slice(1)}
+              {t(`clients.${filter}`)}
             </Text>
           </TouchableOpacity>
         ))}
@@ -219,32 +285,32 @@ export default function ClientsScreen() {
                   <Text style={styles.clientEmail}>{client.email}</Text>
                 </View>
                 <View style={[styles.statusBadge, { backgroundColor: getStatusColor(client.paymentStatus) }]}>
-                  <Text style={styles.statusText}>{client.paymentStatus}</Text>
+                  <Text style={styles.statusText}>{t(`clients.${client.paymentStatus}`)}</Text>
                 </View>
               </View>
               
               <View style={styles.clientDetails}>
                 <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Service:</Text>
-                  <Text style={styles.detailValue}>{service?.name || 'Unknown'}</Text>
+                  <Text style={styles.detailLabel}>{t('clients.service')}:</Text>
+                  <Text style={styles.detailValue}>{service?.name || t('dashboard.unknownService')}</Text>
                 </View>
                 <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Subscription:</Text>
+                  <Text style={styles.detailLabel}>{t('clients.subscriptionPeriod')}:</Text>
                   <Text style={styles.detailValue}>
                     {getSubscriptionLabel(client.subscriptionPeriod, client.customPeriodMonths)}
                   </Text>
                 </View>
                 <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Price:</Text>
-                  <Text style={[styles.detailValue, styles.priceText]}>${client.price.toFixed(2)}</Text>
+                  <Text style={styles.detailLabel}>{t('clients.price')}:</Text>
+                  <Text style={[styles.detailValue, styles.priceText]}>{formatCurrency(client.price)}</Text>
                 </View>
                 <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Joined:</Text>
+                  <Text style={styles.detailLabel}>{t('clients.joined')}:</Text>
                   <Text style={styles.detailValue}>{formatDate(client.dateJoined)}</Text>
                 </View>
                 {client.lastPaidDate && (
                   <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Last Paid:</Text>
+                    <Text style={styles.detailLabel}>{t('clients.lastPaid')}:</Text>
                     <Text style={styles.detailValue}>{formatDate(client.lastPaidDate)}</Text>
                   </View>
                 )}
@@ -255,7 +321,7 @@ export default function ClientsScreen() {
         
         {searchResults.length === 0 && (
           <View style={styles.emptyState}>
-            <Text style={styles.emptyText}>No clients found</Text>
+            <Text style={styles.emptyText}>{t('common.noData')}</Text>
           </View>
         )}
         
@@ -275,7 +341,7 @@ export default function ClientsScreen() {
         >
           <View style={styles.modalContent} onStartShouldSetResponder={() => true}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Quick Actions</Text>
+              <Text style={styles.modalTitle}>{t('clients.quickActions')}</Text>
               <TouchableOpacity onPress={() => setShowQuickActions(false)}>
                 <XIcon size={24} color="#9CA3AF" />
               </TouchableOpacity>
@@ -290,10 +356,10 @@ export default function ClientsScreen() {
 
             {selectedClient?.paymentStatus !== 'paid' && (
               <View style={styles.actionSection}>
-                <Text style={styles.actionSectionTitle}>Mark as Paid</Text>
+                <Text style={styles.actionSectionTitle}>{t('clients.markAsPaid')}</Text>
                 <TextInput
                   style={styles.amountInput}
-                  placeholder="Amount"
+                  placeholder={t('clients.amount')}
                   placeholderTextColor="#6B7280"
                   value={paymentAmount}
                   onChangeText={setPaymentAmount}
@@ -301,13 +367,13 @@ export default function ClientsScreen() {
                 />
                 <TouchableOpacity style={styles.actionButton} onPress={handleMarkPaid}>
                   <CheckCircle size={20} color="#FFFFFF" />
-                  <Text style={styles.actionButtonText}>Confirm Payment</Text>
+                  <Text style={styles.actionButtonText}>{t('clients.confirmPayment')}</Text>
                 </TouchableOpacity>
               </View>
             )}
 
             <View style={styles.actionSection}>
-              <Text style={styles.actionSectionTitle}>Renew Subscription</Text>
+              <Text style={styles.actionSectionTitle}>{t('clients.renewSubscription')}</Text>
               <View style={styles.renewOptions}>
                 {[1, 3, 6, 12].map(months => (
                   <TouchableOpacity
@@ -325,7 +391,7 @@ export default function ClientsScreen() {
             {selectedClient?.paymentStatus !== 'canceled' && (
               <TouchableOpacity style={styles.cancelButton} onPress={handleCancel}>
                 <XIcon size={20} color="#FFFFFF" />
-                <Text style={styles.cancelButtonText}>Cancel Client</Text>
+                <Text style={styles.cancelButtonText}>{t('clients.cancelClient')}</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -349,7 +415,7 @@ export default function ClientsScreen() {
           >
             <View style={styles.addClientModal} onStartShouldSetResponder={() => true}>
               <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Add New Client</Text>
+                <Text style={styles.modalTitle}>{t('clients.addNew')}</Text>
                 <TouchableOpacity onPress={() => setShowAddClient(false)}>
                   <XIcon size={24} color="#9CA3AF" />
                 </TouchableOpacity>
@@ -357,10 +423,10 @@ export default function ClientsScreen() {
 
               <ScrollView style={styles.formScrollView} showsVerticalScrollIndicator={false}>
                 <View style={styles.formField}>
-                  <Text style={styles.formLabel}>Name *</Text>
+                  <Text style={styles.formLabel}>{t('clients.name')} *</Text>
                   <TextInput
                     style={styles.formInput}
-                    placeholder="Client name"
+                    placeholder={t('clients.namePlaceholder')}
                     placeholderTextColor="#6B7280"
                     value={newClient.name}
                     onChangeText={(text) => setNewClient({ ...newClient, name: text })}
@@ -368,7 +434,7 @@ export default function ClientsScreen() {
                 </View>
 
                 <View style={styles.formField}>
-                  <Text style={styles.formLabel}>Email *</Text>
+                  <Text style={styles.formLabel}>{t('clients.email')} *</Text>
                   <TextInput
                     style={styles.formInput}
                     placeholder="client@example.com"
@@ -381,7 +447,7 @@ export default function ClientsScreen() {
                 </View>
 
                 <View style={styles.formField}>
-                  <Text style={styles.formLabel}>Phone *</Text>
+                  <Text style={styles.formLabel}>{t('clients.phone')} *</Text>
                   <View style={styles.phoneContainer}>
                     <TouchableOpacity
                       style={styles.regionSelector}
@@ -402,7 +468,7 @@ export default function ClientsScreen() {
                 </View>
 
                 <View style={styles.formField}>
-                  <Text style={styles.formLabel}>Service *</Text>
+                  <Text style={styles.formLabel}>{t('clients.service')} *</Text>
                   <TouchableOpacity
                     style={styles.pickerButton}
                     onPress={() => setShowServicePicker(true)}
@@ -410,14 +476,14 @@ export default function ClientsScreen() {
                     <Text style={[styles.pickerButtonText, !newClient.serviceId && styles.pickerPlaceholder]}>
                       {newClient.serviceId
                         ? services.find(s => s.id === newClient.serviceId)?.name
-                        : 'Select service'}
+                        : t('clients.selectService')}
                     </Text>
                     <ChevronDown size={20} color="#9CA3AF" />
                   </TouchableOpacity>
                 </View>
 
                 <View style={styles.formField}>
-                  <Text style={styles.formLabel}>Subscription Period *</Text>
+                  <Text style={styles.formLabel}>{t('clients.subscriptionPeriod')} *</Text>
                   <TouchableOpacity
                     style={styles.pickerButton}
                     onPress={() => setShowPeriodPicker(true)}
@@ -431,10 +497,10 @@ export default function ClientsScreen() {
 
                 {newClient.subscriptionPeriod === 'custom' && (
                   <View style={styles.formField}>
-                    <Text style={styles.formLabel}>Custom Period (Months) *</Text>
+                    <Text style={styles.formLabel}>{t('clients.customPeriod')} *</Text>
                     <TextInput
                       style={styles.formInput}
-                      placeholder="Number of months"
+                      placeholder={t('clients.monthsPlaceholder')}
                       placeholderTextColor="#6B7280"
                       value={newClient.customPeriodMonths}
                       onChangeText={(text) => setNewClient({ ...newClient, customPeriodMonths: text })}
@@ -444,7 +510,7 @@ export default function ClientsScreen() {
                 )}
 
                 <View style={styles.formField}>
-                  <Text style={styles.formLabel}>Price</Text>
+                  <Text style={styles.formLabel}>{t('clients.price')}</Text>
                   <TextInput
                     style={styles.formInput}
                     placeholder="0.00"
@@ -456,10 +522,10 @@ export default function ClientsScreen() {
                 </View>
 
                 <View style={styles.formField}>
-                  <Text style={styles.formLabel}>Notes</Text>
+                  <Text style={styles.formLabel}>{t('clients.notes')}</Text>
                   <TextInput
                     style={[styles.formInput, styles.textArea]}
-                    placeholder="Additional notes..."
+                    placeholder={t('clients.notesPlaceholder')}
                     placeholderTextColor="#6B7280"
                     value={newClient.notes}
                     onChangeText={(text) => setNewClient({ ...newClient, notes: text })}
@@ -473,7 +539,7 @@ export default function ClientsScreen() {
                   onPress={handleAddClient}
                 >
                   <Plus size={20} color="#FFFFFF" />
-                  <Text style={styles.submitButtonText}>Add Client</Text>
+                  <Text style={styles.submitButtonText}>{t('clients.addClient')}</Text>
                 </TouchableOpacity>
 
                 <View style={styles.formBottomSpacer} />
@@ -495,7 +561,7 @@ export default function ClientsScreen() {
           onPress={() => setShowServicePicker(false)}
         >
           <View style={styles.pickerModal} onStartShouldSetResponder={() => true}>
-            <Text style={styles.pickerTitle}>Select Service</Text>
+            <Text style={styles.pickerTitle}>{t('clients.selectService')}</Text>
             <ScrollView style={styles.pickerList}>
               {services.map(service => (
                 <TouchableOpacity
@@ -507,7 +573,7 @@ export default function ClientsScreen() {
                   }}
                 >
                   <Text style={styles.pickerItemText}>{service.name}</Text>
-                  <Text style={styles.pickerItemPrice}>${service.price}</Text>
+                  <Text style={styles.pickerItemPrice}>{formatCurrency(service.price)}</Text>
                 </TouchableOpacity>
               ))}
             </ScrollView>
@@ -527,7 +593,7 @@ export default function ClientsScreen() {
           onPress={() => setShowPeriodPicker(false)}
         >
           <View style={styles.pickerModal} onStartShouldSetResponder={() => true}>
-            <Text style={styles.pickerTitle}>Select Period</Text>
+            <Text style={styles.pickerTitle}>{t('clients.selectPeriod')}</Text>
             <ScrollView style={styles.pickerList}>
               {SUBSCRIPTION_PERIODS.map(period => (
                 <TouchableOpacity
@@ -558,7 +624,7 @@ export default function ClientsScreen() {
           onPress={() => setShowRegionPicker(false)}
         >
           <View style={styles.pickerModal} onStartShouldSetResponder={() => true}>
-            <Text style={styles.pickerTitle}>Select Region</Text>
+            <Text style={styles.pickerTitle}>{t('clients.selectRegion')}</Text>
             <ScrollView style={styles.pickerList}>
               {regions.map(region => (
                 <TouchableOpacity
@@ -586,7 +652,7 @@ export default function ClientsScreen() {
         >
           <View style={styles.fabContent}>
             <UserPlus size={24} color="#FFFFFF" strokeWidth={2.5} />
-            <Text style={styles.fabText}>Add Client</Text>
+            <Text style={styles.fabText}>{t('clients.addClient')}</Text>
           </View>
         </TouchableOpacity>
       </Animated.View>

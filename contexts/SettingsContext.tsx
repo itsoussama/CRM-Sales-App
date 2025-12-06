@@ -4,6 +4,8 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppSettings } from '@/types/crm';
 
+import { changeLanguage } from '@/i18n';
+
 const SETTINGS_STORAGE_KEY = 'crm_settings';
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -13,6 +15,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoResetCanceledClients: true,
   canceledResetIntervalHours: 48,
   theme: 'light',
+  currency: 'USD',
+  language: 'en',
+  lastCanceledReset: undefined,
 };
 
 export const [SettingsContext, useSettings] = createContextHook(() => {
@@ -26,7 +31,8 @@ export const [SettingsContext, useSettings] = createContextHook(() => {
       if (stored) {
         const parsedSettings = JSON.parse(stored);
         console.log('[SettingsContext] Loaded settings:', parsedSettings);
-        return parsedSettings;
+        // Merge with defaults to ensure new fields (like currency) are present
+        return { ...DEFAULT_SETTINGS, ...parsedSettings };
       }
       console.log('[SettingsContext] No stored settings, using defaults');
       await AsyncStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(DEFAULT_SETTINGS));
@@ -48,11 +54,18 @@ export const [SettingsContext, useSettings] = createContextHook(() => {
     }
   }, [settingsQuery.data]);
 
+
+
   const updateSettings = (updates: Partial<AppSettings>) => {
     console.log('[SettingsContext] Updating settings:', updates);
     const updated = { ...settings, ...updates };
     setSettings(updated);
     saveMutation.mutate(updated);
+
+    // Sync language with i18n
+    if (updates.language) {
+      changeLanguage(updates.language);
+    }
   };
 
   return {

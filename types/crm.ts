@@ -11,7 +11,7 @@ export interface Client {
   serviceId: string;
   price: number;
   subscriptionPeriod: SubscriptionPeriod;
-  customPeriodMonths?: number;
+  customPeriodMonths?: number | null;
   isJoined: boolean;
   dateJoined: string;
   lastPaidDate?: string;
@@ -50,6 +50,9 @@ export interface AppSettings {
   autoResetCanceledClients: boolean;
   canceledResetIntervalHours: number;
   theme: 'light' | 'dark' | 'auto';
+  currency: 'USD' | 'MAD' | 'EUR';
+  language: 'en' | 'fr' | 'ar';
+  lastCanceledReset?: string;
 }
 
 export interface User {

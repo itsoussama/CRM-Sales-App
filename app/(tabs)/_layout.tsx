@@ -1,5 +1,5 @@
 import { Tabs } from 'expo-router';
-import { LayoutDashboard, Users, Package, Bell } from 'lucide-react-native';
+import { LayoutDashboard, Users, Package, Bell, Settings } from 'lucide-react-native';
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { useNotifications } from '@/contexts/NotificationsContext';
@@ -34,8 +34,7 @@ export default function TabLayout() {
           backgroundColor: '#1F2937',
           borderTopColor: '#374151',
           borderTopWidth: 1,
-          paddingBottom: insets.bottom + 8,
-          paddingTop: 8,
+          height: insets.bottom + 60,
         },
         tabBarActiveTintColor: '#3B82F6',
         tabBarInactiveTintColor: '#9CA3AF',
@@ -81,6 +80,15 @@ export default function TabLayout() {
               <TabBarIcon IconComponent={Bell} color={color} focused={focused} />
               <NotificationBadge count={unreadCount} />
             </View>
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="settings"
+        options={{
+          title: 'Settings',
+          tabBarIcon: ({ color, focused }) => (
+            <TabBarIcon IconComponent={Settings} color={color} focused={focused} />
           ),
         }}
       />

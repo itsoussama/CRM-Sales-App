@@ -9,7 +9,7 @@ export const SUBSCRIPTION_PERIODS: { value: SubscriptionPeriod; label: string; m
   { value: 'custom', label: 'Custom', months: 0 },
 ];
 
-export function getSubscriptionMonths(period: SubscriptionPeriod, customMonths?: number): number {
+export function getSubscriptionMonths(period: SubscriptionPeriod, customMonths?: number | null): number {
   const found = SUBSCRIPTION_PERIODS.find(p => p.value === period);
   if (period === 'custom' && customMonths) {
     return customMonths;
@@ -17,7 +17,7 @@ export function getSubscriptionMonths(period: SubscriptionPeriod, customMonths?:
   return found?.months || 0;
 }
 
-export function getSubscriptionLabel(period: SubscriptionPeriod, customMonths?: number): string {
+export function getSubscriptionLabel(period: SubscriptionPeriod, customMonths?: number | null): string {
   if (period === 'custom' && customMonths) {
     return `${customMonths} Month${customMonths > 1 ? 's' : ''}`;
   }

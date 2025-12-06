@@ -1,115 +1,192 @@
 import createContextHook from '@nkzw/create-context-hook';
 import { useState, useEffect, useMemo } from 'react';
-import { useQuery, useMutation } from '@tanstack/react-query';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { 
+  collection, 
+  onSnapshot, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  doc, 
+  query, 
+  orderBy,
+  where,
+  getDocs
+} from 'firebase/firestore';
+import { db } from '@/config/firebase';
 import { Client, PaymentStatus } from '@/types/crm';
-import { INITIAL_CLIENTS } from '@/mocks/clients';
 import { getSubscriptionMonths } from '@/constants/subscription-periods';
-
-const CLIENTS_STORAGE_KEY = 'crm_clients';
-const LAST_RESET_KEY = 'crm_last_canceled_reset';
+import { useNotifications } from './NotificationsContext';
+import { useServices } from './ServicesContext';
+import { useAuth } from './AuthContext';
+import { useSettings } from './SettingsContext';
 
 export const [ClientsContext, useClients] = createContextHook(() => {
   const [clients, setClients] = useState<Client[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const { addNotification } = useNotifications();
+  const { updateUsedQuantity, getServiceById } = useServices();
+  const { isAuthenticated } = useAuth();
+  const { settings, updateSettings } = useSettings();
 
-  const clientsQuery = useQuery({
-    queryKey: ['clients'],
-    queryFn: async () => {
-      console.log('[ClientsContext] Loading clients from storage');
-      const stored = await AsyncStorage.getItem(CLIENTS_STORAGE_KEY);
-      if (stored) {
-        const parsedClients = JSON.parse(stored);
-        console.log('[ClientsContext] Loaded clients:', parsedClients.length);
-        return parsedClients;
-      }
-      console.log('[ClientsContext] No stored clients, using initial data');
-      await AsyncStorage.setItem(CLIENTS_STORAGE_KEY, JSON.stringify(INITIAL_CLIENTS));
-      return INITIAL_CLIENTS;
-    },
-  });
-
-  const saveMutation = useMutation({
-    mutationFn: async (updatedClients: Client[]) => {
-      console.log('[ClientsContext] Saving clients to storage:', updatedClients.length);
-      await AsyncStorage.setItem(CLIENTS_STORAGE_KEY, JSON.stringify(updatedClients));
-      return updatedClients;
-    },
-  });
-
+  // Real-time listener for clients
   useEffect(() => {
-    if (clientsQuery.data) {
-      setClients(clientsQuery.data);
+    if (!isAuthenticated) {
+      setClients([]);
+      setIsLoading(false);
+      return;
     }
-  }, [clientsQuery.data]);
 
-  const { mutate: saveClients } = saveMutation;
+    console.log('[ClientsContext] Setting up clients listener');
+    const q = query(collection(db, 'clients'), orderBy('createdAt', 'desc'));
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const clientsList: Client[] = [];
+      snapshot.forEach((doc) => {
+        clientsList.push({ id: doc.id, ...doc.data() } as Client);
+      });
+      console.log('[ClientsContext] Clients updated:', clientsList.length);
+      setClients(clientsList);
+      setIsLoading(false);
+    }, (error) => {
+      console.error('[ClientsContext] Error listening to clients:', error);
+      setIsLoading(false);
+    });
 
+    return () => unsubscribe();
+  }, [isAuthenticated]);
+
+  // Check and reset canceled clients logic - adapted for Firestore
   useEffect(() => {
     const checkAndResetCanceled = async () => {
-      const lastReset = await AsyncStorage.getItem(LAST_RESET_KEY);
+      if (!settings.autoResetCanceledClients) return;
+
+      const lastReset = settings.lastCanceledReset;
       const now = Date.now();
-      const resetInterval = 48 * 60 * 60 * 1000;
+      const resetInterval = settings.canceledResetIntervalHours * 60 * 60 * 1000;
 
       if (!lastReset || now - parseInt(lastReset) > resetInterval) {
-        console.log('[ClientsContext] Resetting canceled clients');
-        const updatedClients = clients.map(client => 
-          client.paymentStatus === 'canceled' 
-            ? { ...client, paymentStatus: 'unpaid' as PaymentStatus }
-            : client
-        );
-        setClients(updatedClients);
-        saveClients(updatedClients);
-        await AsyncStorage.setItem(LAST_RESET_KEY, now.toString());
+        console.log('[ClientsContext] Checking for canceled clients to reset');
+        // We need to query canceled clients from Firestore
+        const q = query(collection(db, 'clients'), where('paymentStatus', '==', 'canceled'));
+        const querySnapshot = await getDocs(q);
+        
+        const batchPromises = querySnapshot.docs.map(docSnapshot => {
+          const clientRef = doc(db, 'clients', docSnapshot.id);
+          return updateDoc(clientRef, { paymentStatus: 'unpaid' });
+        });
+        
+        if (batchPromises.length > 0) {
+          await Promise.all(batchPromises);
+          console.log(`[ClientsContext] Reset ${batchPromises.length} canceled clients`);
+        }
+        
+        updateSettings({ lastCanceledReset: now.toString() });
       }
     };
 
-    if (clients.length > 0) {
+    // Only run this check once on mount, or when settings change
+    if (isAuthenticated) {
       checkAndResetCanceled();
     }
-  }, [clients, saveClients]);
+  }, [isAuthenticated, settings.autoResetCanceledClients, settings.canceledResetIntervalHours, settings.lastCanceledReset]);
 
-  const addClient = (client: Omit<Client, 'id' | 'createdAt' | 'updatedAt'>) => {
-    const newClient: Client = {
-      ...client,
-      id: Date.now().toString(),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    console.log('[ClientsContext] Adding new client:', newClient.name);
-    const updated = [...clients, newClient];
-    setClients(updated);
-    saveMutation.mutate(updated);
-    return newClient;
+  const addClient = async (client: Omit<Client, 'id' | 'createdAt' | 'updatedAt'>) => {
+    // Check if service has available stock
+    const service = getServiceById(client.serviceId);
+    if (!service) {
+      return { success: false, error: 'Service not found' };
+    }
+
+    const availableQuantity = service.totalQuantity - service.usedQuantity;
+    if (availableQuantity <= 0) {
+      return { 
+        success: false, 
+        error: 'out_of_stock',
+        serviceName: service.name 
+      };
+    }
+
+    try {
+      console.log('[ClientsContext] Adding new client:', client.name);
+      const newClientData = {
+        ...client,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      
+      const docRef = await addDoc(collection(db, 'clients'), newClientData);
+      const newClient = { id: docRef.id, ...newClientData };
+      
+      // Increment usedQuantity to track this client is using the service
+      await updateUsedQuantity(newClient.serviceId, 1);
+      
+      // Trigger notification
+      addNotification({
+        type: 'new_client',
+        title: 'New Client Added',
+        message: `${newClient.name} subscribed to ${service?.name || 'service'}`,
+        clientId: newClient.id,
+        serviceId: newClient.serviceId,
+      });
+      
+      return { success: true, client: newClient };
+    } catch (error) {
+      console.error('[ClientsContext] Error adding client:', error);
+      return { success: false, error: 'Failed to add client' };
+    }
   };
 
-  const updateClient = (id: string, updates: Partial<Client>) => {
+  const updateClient = async (id: string, updates: Partial<Client>) => {
     console.log('[ClientsContext] Updating client:', id, updates);
-    const updated = clients.map(client =>
-      client.id === id
-        ? { ...client, ...updates, updatedAt: new Date().toISOString() }
-        : client
-    );
-    setClients(updated);
-    saveMutation.mutate(updated);
+    try {
+      const clientRef = doc(db, 'clients', id);
+      await updateDoc(clientRef, {
+        ...updates,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error('[ClientsContext] Error updating client:', error);
+    }
   };
 
-  const markAsPaid = (id: string, amountPaid: number) => {
+  const markAsPaid = async (id: string, amountPaid: number) => {
     console.log('[ClientsContext] Marking client as paid:', id, amountPaid);
-    updateClient(id, {
+    const client = clients.find(c => c.id === id);
+    
+    await updateClient(id, {
       paymentStatus: 'paid',
       lastPaidDate: new Date().toISOString(),
       price: amountPaid,
     });
+    
+    // Trigger notification
+    if (client) {
+      const service = getServiceById(client.serviceId);
+      addNotification({
+        type: 'payment_received',
+        title: 'Payment Received',
+        message: `${client.name} paid $${amountPaid.toFixed(2)} for ${service?.name || 'service'}`,
+        clientId: id,
+        serviceId: client.serviceId,
+      });
+    }
   };
 
-  const cancelClient = (id: string) => {
+  const cancelClient = async (id: string) => {
     console.log('[ClientsContext] Canceling client:', id);
-    updateClient(id, {
+    const client = clients.find(c => c.id === id);
+    
+    // Decrement usedQuantity when client is canceled
+    if (client) {
+      await updateUsedQuantity(client.serviceId, -1);
+    }
+    
+    await updateClient(id, {
       paymentStatus: 'canceled',
     });
   };
 
-  const renewSubscription = (id: string, additionalMonths: number) => {
+  const renewSubscription = async (id: string, additionalMonths: number) => {
     console.log('[ClientsContext] Renewing subscription:', id, additionalMonths);
     const client = clients.find(c => c.id === id);
     if (!client) return;
@@ -117,24 +194,26 @@ export const [ClientsContext, useClients] = createContextHook(() => {
     const currentMonths = getSubscriptionMonths(client.subscriptionPeriod, client.customPeriodMonths);
     const newMonths = currentMonths + additionalMonths;
 
-    updateClient(id, {
+    await updateClient(id, {
       subscriptionPeriod: 'custom',
       customPeriodMonths: newMonths,
       paymentStatus: 'unpaid',
     });
   };
 
-  const deleteClient = (id: string) => {
+  const deleteClient = async (id: string) => {
     console.log('[ClientsContext] Deleting client:', id);
-    const updated = clients.filter(client => client.id !== id);
-    setClients(updated);
-    saveMutation.mutate(updated);
+    try {
+      await deleteDoc(doc(db, 'clients', id));
+    } catch (error) {
+      console.error('[ClientsContext] Error deleting client:', error);
+    }
   };
 
   return {
     clients,
-    isLoading: clientsQuery.isLoading,
-    isSaving: saveMutation.isPending,
+    isLoading,
+    isSaving: false, // Firestore handles this
     addClient,
     updateClient,
     markAsPaid,

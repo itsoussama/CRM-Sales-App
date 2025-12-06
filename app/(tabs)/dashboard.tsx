@@ -4,52 +4,60 @@ import { Stack } from 'expo-router';
 import { TrendingUp, DollarSign, Users, AlertTriangle, Clock } from 'lucide-react-native';
 import { useClients } from '@/contexts/ClientsContext';
 import { useServices } from '@/contexts/ServicesContext';
+import { useSettings } from '@/contexts/SettingsContext';
+import { useTranslation } from 'react-i18next';
 
 const { width } = Dimensions.get('window');
 
 export default function DashboardScreen() {
+  const { t } = useTranslation();
   const { clients } = useClients();
-  const { services, getLowStockServices } = useServices();
+  const { services } = useServices();
+  const { settings } = useSettings();
 
   const paidClients = clients.filter(c => c.paymentStatus === 'paid');
   const unpaidClients = clients.filter(c => c.paymentStatus === 'unpaid');
   const canceledClients = clients.filter(c => c.paymentStatus === 'canceled');
-  
-  const totalRevenue = paidClients.reduce((sum, client) => sum + client.price, 0);
-  const pendingRevenue = unpaidClients.reduce((sum, client) => sum + client.price, 0);
-  
-  const lowStockServices = getLowStockServices();
-  
+
+  const totalRevenue = paidClients.reduce((sum, client) => sum + (client.price || 0), 0);
+  const pendingRevenue = unpaidClients.reduce((sum, client) => sum + (client.price || 0), 0);
+
+  const lowStockServices = services.filter(s => {
+    const available = s.totalQuantity - s.usedQuantity;
+    return available <= s.lowStockThreshold;
+  });
+
   const recentClients = [...clients]
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
     .slice(0, 5);
 
   const formatCurrency = (amount: number) => {
-    return `$${amount.toFixed(2)}`;
+    return new Intl.NumberFormat(settings.language, {
+      style: 'currency',
+      currency: settings.currency,
+    }).format(amount);
   };
 
   const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return new Date(dateString).toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+    });
   };
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case 'paid':
-        return '#10B981';
-      case 'unpaid':
-        return '#F59E0B';
-      case 'canceled':
-        return '#EF4444';
-      default:
-        return '#6B7280';
+      case 'paid': return '#10B981';
+      case 'unpaid': return '#F59E0B';
+      case 'canceled': return '#EF4444';
+      default: return '#6B7280';
     }
   };
 
   return (
     <View style={styles.container}>
       <Stack.Screen options={{ 
-        title: 'Dashboard',
+        title: t('dashboard.title'),
         headerStyle: { backgroundColor: '#1F2937' },
         headerTintColor: '#FFFFFF',
         headerShadowVisible: false,
@@ -62,8 +70,8 @@ export default function DashboardScreen() {
               <DollarSign size={24} color="#FFFFFF" />
             </View>
             <Text style={styles.kpiValue}>{formatCurrency(totalRevenue)}</Text>
-            <Text style={styles.kpiLabel}>Total Revenue</Text>
-            <Text style={styles.kpiSubtext}>{paidClients.length} paid clients</Text>
+            <Text style={styles.kpiLabel}>{t('dashboard.totalRevenue')}</Text>
+            <Text style={styles.kpiSubtext}>{t('dashboard.paidClients', { count: paidClients.length })}</Text>
           </View>
 
           <View style={[styles.kpiCard, { backgroundColor: '#F59E0B' }]}>
@@ -71,8 +79,8 @@ export default function DashboardScreen() {
               <Clock size={24} color="#FFFFFF" />
             </View>
             <Text style={styles.kpiValue}>{formatCurrency(pendingRevenue)}</Text>
-            <Text style={styles.kpiLabel}>Pending</Text>
-            <Text style={styles.kpiSubtext}>{unpaidClients.length} unpaid</Text>
+            <Text style={styles.kpiLabel}>{t('dashboard.pending')}</Text>
+            <Text style={styles.kpiSubtext}>{t('dashboard.unpaidClients', { count: unpaidClients.length })}</Text>
           </View>
 
           <View style={[styles.kpiCard, { backgroundColor: '#3B82F6' }]}>
@@ -80,8 +88,8 @@ export default function DashboardScreen() {
               <Users size={24} color="#FFFFFF" />
             </View>
             <Text style={styles.kpiValue}>{clients.length}</Text>
-            <Text style={styles.kpiLabel}>Total Clients</Text>
-            <Text style={styles.kpiSubtext}>{canceledClients.length} canceled</Text>
+            <Text style={styles.kpiLabel}>{t('dashboard.totalClients')}</Text>
+            <Text style={styles.kpiSubtext}>{t('dashboard.canceledClients', { count: canceledClients.length })}</Text>
           </View>
 
           <View style={[styles.kpiCard, { backgroundColor: '#EF4444' }]}>
@@ -89,8 +97,8 @@ export default function DashboardScreen() {
               <AlertTriangle size={24} color="#FFFFFF" />
             </View>
             <Text style={styles.kpiValue}>{lowStockServices.length}</Text>
-            <Text style={styles.kpiLabel}>Low Stock</Text>
-            <Text style={styles.kpiSubtext}>Services alert</Text>
+            <Text style={styles.kpiLabel}>{t('dashboard.lowStock')}</Text>
+            <Text style={styles.kpiSubtext}>{t('dashboard.servicesAlert')}</Text>
           </View>
         </View>
 
@@ -98,7 +106,7 @@ export default function DashboardScreen() {
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
               <AlertTriangle size={20} color="#EF4444" />
-              <Text style={styles.sectionTitle}>Low Stock Alerts</Text>
+              <Text style={styles.sectionTitle}>{t('dashboard.lowStockAlerts')}</Text>
             </View>
             {lowStockServices.map(service => {
               const available = service.totalQuantity - service.usedQuantity;
@@ -107,7 +115,7 @@ export default function DashboardScreen() {
                   <View style={styles.alertLeft}>
                     <Text style={styles.alertServiceName}>{service.name}</Text>
                     <Text style={styles.alertText}>
-                      Only {available} of {service.totalQuantity} remaining
+                      {t('dashboard.remaining', { count: available, total: service.totalQuantity })}
                     </Text>
                   </View>
                   <View style={styles.alertBadge}>
@@ -122,7 +130,7 @@ export default function DashboardScreen() {
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <TrendingUp size={20} color="#10B981" />
-            <Text style={styles.sectionTitle}>Recent Clients</Text>
+            <Text style={styles.sectionTitle}>{t('dashboard.recentClients')}</Text>
           </View>
           {recentClients.map(client => {
             const service = services.find(s => s.id === client.serviceId);
@@ -130,13 +138,13 @@ export default function DashboardScreen() {
               <TouchableOpacity key={client.id} style={styles.clientCard}>
                 <View style={styles.clientLeft}>
                   <Text style={styles.clientName}>{client.name}</Text>
-                  <Text style={styles.clientService}>{service?.name || 'Unknown Service'}</Text>
+                  <Text style={styles.clientService}>{service?.name || t('dashboard.unknownService')}</Text>
                   <Text style={styles.clientDate}>{formatDate(client.createdAt)}</Text>
                 </View>
                 <View style={styles.clientRight}>
                   <Text style={styles.clientPrice}>{formatCurrency(client.price)}</Text>
                   <View style={[styles.statusBadge, { backgroundColor: getStatusColor(client.paymentStatus) }]}>
-                    <Text style={styles.statusText}>{client.paymentStatus}</Text>
+                    <Text style={styles.statusText}>{t(`clients.${client.paymentStatus}`)}</Text>
                   </View>
                 </View>
               </TouchableOpacity>
